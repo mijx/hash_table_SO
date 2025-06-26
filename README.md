@@ -61,9 +61,9 @@ El ID de **BibNumber** se designa como otro campo de búsqueda primario. Su func
 
 ### Rangos de Valores Válidos para las Entradas 
 
-* **ID del recurso**: 1, 2 o 3, para seleccionar entre las opciones respectivas “Buscar por ID y año”, “Buscar ID en todos los años” o “Salir”.
+* **ID del recurso**: valor entero.
 * **Año de búsqueda**: desde 2005 hasta 2017.
-* **ID del recurso físico**: número entero largo.
+* **Mes**: desde 01 hasta 12.
 
 ## 4. Ejemplos de Uso del Programa
 
