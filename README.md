@@ -44,26 +44,24 @@ A continuación, se presenta una descripción detallada de los campos del datase
 
 Los criterios de búsqueda implementados son los siguientes:
 
-* Tipo de búsqueda (descrita en el menú): “Buscar por ID y año” o “Buscar ID en todos los años”.
-* Año de búsqueda.
-* ID del recurso físico: ItemBarcode.
+* ID del recurso: BibNumber.
+* Año de búsqueda(opcional).
+* Número de mes (opcional).
 
 ### Justificación de los Criterios 
 
-El **tipo de búsqueda** es un campo que permite flexibilidad en el uso de la interfaz, ya que habilita al sistema para atender tanto a necesidades de consulta precisas como a exploraciones más amplias. Los dos tipos de consultas son:
+Se permiten campos opcionales, año y mes, para permitir flexibilidad en el uso de la interfaz, ya que habilita al sistema para atender tanto a necesidades de consulta precisas como a exploraciones más amplias. Los dos tipos de consultas son:
 
-* **Consultas Específicas**: permite obtener los registros de un año en particular, permitiendo al sistema reducir el espacio de búsqueda, mejorando significativamente el rendimiento y la velocidad de las consultas para ítems específicos dentro de ese periodo.
-* **Búsquedas Globales (a través del tiempo)**: los usuarios pueden optar por no especificar un año para realizar búsquedas de un ítem a lo largo de toda la línea de tiempo del dataset. Útil para encontrar un ítem sin importar su año de registro.
+* **Consultas Específicas**: permite obtener los registros de un año y mes en particular, permitiendo al sistema reducir el espacio de búsqueda, mejorando significativamente el rendimiento y la velocidad de las consultas para ítems específicos dentro de ese periodo.
+* **Búsquedas Globales (a través del tiempo)**: los usuarios pueden optar por especificar solamente el ID para realizar búsquedas de un ítem a lo largo de toda la línea de tiempo del dataset. Útil para encontrar un ítem sin importar su año de registro.
 
-El **año** es uno de los campos de búsqueda primarios, debido a su importancia para filtrar y segmentar la información. Esta característica se vuelve fundamental dado que el dataset abarca más de una década de datos.
+Los criterios de búsqueda realacionados a la fecha de checkout es un campo primarios, debido a su importancia para filtrar y segmentar la información. Esta característica se vuelve fundamental dado que el dataset abarca más de una década de datos.
 
-El ID de **Código de Barras** se designa como otro campo de búsqueda primario. Su función es actuar como un identificador único para cada ejemplar dentro del dataset. El uso de este campo garantiza:
-
-* Precisión absoluta, dado que al buscar por ID de código de barras, se elimina cualquier ambigüedad, asegurando que el resultado sea exactamente el ejemplar deseado.
+El ID de **BibNumber** se designa como otro campo de búsqueda primario. Su función es actuar como un identificador único para cada ejemplar dentro del dataset. El uso de este campo garantiza gran presiciónrecisión absoluta, dado que al buscar por ID se elimina cualquier ambigüedad, asegurando que el resultado sea exactamente el ejemplar deseado.
 
 ### Rangos de Valores Válidos para las Entradas 
 
-* **Tipo de búsqueda**: 1, 2 o 3, para seleccionar entre las opciones respectivas “Buscar por ID y año”, “Buscar ID en todos los años” o “Salir”.
+* **ID del recurso**: 1, 2 o 3, para seleccionar entre las opciones respectivas “Buscar por ID y año”, “Buscar ID en todos los años” o “Salir”.
 * **Año de búsqueda**: desde 2005 hasta 2017.
 * **ID del recurso físico**: número entero largo.
 
@@ -74,116 +72,31 @@ El ID de **Código de Barras** se designa como otro campo de búsqueda primario.
 Para compilar cada componente de tu programa, usa los siguientes comandos:
 
 ```bash
-gcc -o indexer indexer.c
-gcc -o backend backend.c
-gcc -o frontend frontend.c
+gcc constructor.c -o constructor
+gcc frontend.c -o frontend `pkg-config --cflags --libs gtk+-3.0`
+gcc backend.c -o backend
 ```
 
 Una vez compilado, el primer paso es generar el archivo índice de los hashes de todos los archivos CSV. Para hacer esto, ejecuta:
 ```bash
-./indexer
+./constructor
 ```
 Después de generar el índice, necesitas crear las tuberías de comunicación:
 ```bash
-mkfifo /tmp/checkout_req_pipe 
-mkfifo /tmp/checkout_res_pipe
+mkfifo /tmp/frontend_input /tmp/frontend_output 2>/dev/null || true
 ```
 Ahora, en una terminal, ejecuta el backend:
 ```bash
 ./backend
 ```
-Espera a que el backend muestre el mensaje de que el servicio de búsqueda está iniciado, el índice cargado y que está esperando conexiones.
+
 Finalmente, en otra terminal, ejecuta el frontend:
 ```bash
 ./frontend
 ```
 ### 4.2. Ejemplos específicos de búsquedas
+#### Ingresando ID, año y fecha
+<img src="demo/tres_parametros.png" alt="Ejemplo 1" style="width:80%;">
 
-#### Búsqueda por ID en Todos los Años (Opción 2)
-
-Este tipo de búsqueda permite al usuario encontrar todas las ocurrencias de un **ID de código de barras** específico a lo largo de todos los años disponibles en el dataset.
-
-Output obtenido:
-```bash
---- MENU PRINCIPAL ---
-1) Buscar por ID y año
-2) Buscar ID en todos los años
-3) Salir
-Opción: 2
-
-ID a buscar en todos los años: 0010066538447
-
->> Resultado(s):
-Año:BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime
-2009:2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,04/15/2009 05:30:00 PM
-2010:2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,09/16/2010 06:19:00 PM
-2011:2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,06/11/2011 11:14:00 AM
-2012:2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,12/07/2012 03:39:00 PM
-2013:2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,05/30/2013 12:16:00 PM
-```
----
-
-#### Búsqueda por ID y Año Específico (Opción 1)
-
-Esta opción permite una búsqueda más precisa, especificando tanto el **ID de código de barras** como el **año** en el que se desea buscar.
-
-Output obtenido:
-```bash
---- MENU PRINCIPAL ---
-1) Buscar por ID y año
-2) Buscar ID en todos los años
-3) Salir
-Opción: 1
-
-Año (2005-2017): 2009
-ID a buscar: 0010066538447
-
->> Resultado(s):
-Año:BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime
-2553230,0010066538447,acdvd,nadvd,FRENCH DVD NE LED,04/15/2009 05:30:00 PM
-```
----
-
-#### Búsqueda con Año No Válido
-
-Se muestra cómo el programa maneja la entrada de un año que está fuera del rango permitido (2005-2017).
-```bash
-Output obtenido:
---- MENU PRINCIPAL ---
-1) Buscar por ID y año
-2) Buscar ID en todos los años
-3) Salir
-Opción: 1
-
-Año (2005-2017): 2020
-Año no válido.
-
---- MENU PRINCIPAL ---
-1) Buscar por ID y año
-2) Buscar ID en todos los años
-3) Salir
-Opción: 1
-
-Año (2005-2017): 1900
-Año no válido.
-```
----
-
-#### Búsqueda con ID No Existente en el Dataset
-
-Este ejemplo ilustra el comportamiento del sistema cuando se busca un **ID de código de barras** que no se encuentra en el dataset, incluso si el año es válido.
-```bash
-Output obtenido:
---- MENU PRINCIPAL ---
-1) Buscar por ID y año
-2) Buscar ID en todos los años
-3) Salir
-Opción: 1
-
-Año (2005-2017): 2005
-ID a buscar: 1111
-
->> Resultado(s):
-Año:BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime
->> Registro no encontrado.
-```
+#### Ingresando ID y año
+<img src="demo/dos_parametros.png" alt="Ejemplo 2" style="width:80%;">
