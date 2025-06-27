@@ -10,10 +10,47 @@
 #define OUTPUT_PIPE "/tmp/frontend_output"
 #define MAX_LINE_LEN 4096
 
+// Función para detectar el tipo de archivo CSV
+int detect_file_type(const char *csv_filepath) {
+    FILE *csv_file = fopen(csv_filepath, "r");
+    if (!csv_file) {
+        return -1; // Error
+    }
+    
+    char header_line[MAX_LINE_LEN];
+    if (fgets(header_line, MAX_LINE_LEN, csv_file) == NULL) {
+        fclose(csv_file);
+        return -1;
+    }
+    
+    fclose(csv_file);
+    
+    // Detectar si es archivo de checkouts (tiene CheckoutDateTime)
+    if (strstr(header_line, "CheckoutDateTime") != NULL) {
+        return 1; // Checkouts
+    }
+    // Detectar si es archivo de inventario (tiene Title, Author, ISBN)
+    else if (strstr(header_line, "Title") != NULL && strstr(header_line, "Author") != NULL) {
+        return 2; // Inventory
+    }
+    
+    return 0; // Tipo desconocido
+}
+
 void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     const char *csv_filepath = "Data2005.csv";
     const char *header_filepath = "header.dat";
     const char *index_filepath = "index.dat";
+
+    // Detectar tipo de archivo
+    int file_type = detect_file_type(csv_filepath);
+    if (file_type == -1) {
+        char error_msg[] = "Error: No se puede abrir el archivo CSV";
+        int fd = open(OUTPUT_PIPE, O_WRONLY);
+        write(fd, error_msg, strlen(error_msg)+1);
+        close(fd);
+        return;
+    }
 
     FILE *header_file = fopen(header_filepath, "rb");
     if (!header_file) {
@@ -28,6 +65,12 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     long current_node_offset = header_table[hash_index];
 
     if (current_node_offset == -1) {
+        char not_found_msg[256];
+        snprintf(not_found_msg, sizeof(not_found_msg), 
+                "ID '%s' no encontrado.", id_to_find);
+        int fd = open(OUTPUT_PIPE, O_WRONLY);
+        write(fd, not_found_msg, strlen(not_found_msg)+1);
+        close(fd);
         return;
     }
 
@@ -41,10 +84,16 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
 
     int found_count = 0;
     char line_buffer[MAX_LINE_LEN];
-    char result_buffer[MAX_LINE_LEN * 10]; // Buffer for results
+    char result_buffer[MAX_LINE_LEN * 10];
     result_buffer[0] = '\0';
 
-    const char *csv_headers = "BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime\n";
+    // Headers según el tipo de archivo
+    const char *csv_headers;
+    if (file_type == 1) { // Checkouts
+        csv_headers = "BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime\n";
+    } else { // Inventory
+        csv_headers = "BibNum,Title,Author,ISBN,PublicationYear,Publisher,Subjects,ItemType,ItemCollection,FloatingItem,ItemLocation,ReportDate,ItemCount\n";
+    }
 
     while (current_node_offset != -1) {
         fseek(index_file, current_node_offset, SEEK_SET);
@@ -61,51 +110,76 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
         char *record_id = strtok(line_copy, ",");
 
         if (record_id != NULL && strcmp(record_id, id_to_find) == 0) {
-            char temp_line[MAX_LINE_LEN];
-            strncpy(temp_line, line_buffer, sizeof(temp_line) - 1);
-            temp_line[sizeof(temp_line) - 1] = '\0';
+            if (file_type == 1) { // Checkouts - aplicar filtros de fecha
+                char temp_line[MAX_LINE_LEN];
+                strncpy(temp_line, line_buffer, sizeof(temp_line) - 1);
+                temp_line[sizeof(temp_line) - 1] = '\0';
 
-            char *date_time_str = NULL;
-            int col_idx = 0;
-            char *token = strtok(temp_line, ",");
-            while (token != NULL && col_idx < 5) {
-                token = strtok(NULL, ",");
-                col_idx++;
-            }
-            
-            if (token != NULL) {
-                date_time_str = token;
-            }
-
-            int record_month, record_day, record_year;
-            if (date_time_str && sscanf(date_time_str, "%d/%d/%d", &record_month, &record_day, &record_year) == 3) {
-                int year_matches = (filter_year == 0 || record_year == filter_year);
-                int month_matches = (filter_month == 0 || record_month == filter_month);
-
-                if (year_matches && month_matches) {
-                    if (found_count == 0) {
-                        strcat(result_buffer, "Registros encontrados para el ID '");
-                        strcat(result_buffer, id_to_find);
-                        strcat(result_buffer, "'");
-                        
-                        if (filter_year > 0) {
-                            char year_str[16];
-                            snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
-                            strcat(result_buffer, year_str);
-                        }
-                        
-                        if (filter_month > 0) {
-                            char month_str[16];
-                            snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
-                            strcat(result_buffer, month_str);
-                        }
-                        
-                        strcat(result_buffer, ":\n");
-                        strcat(result_buffer, csv_headers);
-                    }
-                    strcat(result_buffer, line_buffer);
-                    found_count++;
+                char *date_time_str = NULL;
+                int col_idx = 0;
+                char *token = strtok(temp_line, ",");
+                while (token != NULL && col_idx < 5) {
+                    token = strtok(NULL, ",");
+                    col_idx++;
                 }
+                
+                if (token != NULL) {
+                    date_time_str = token;
+                }
+
+                int record_month, record_day, record_year;
+                if (date_time_str && sscanf(date_time_str, "%d/%d/%d", &record_month, &record_day, &record_year) == 3) {
+                    int year_matches = (filter_year == 0 || record_year == filter_year);
+                    int month_matches = (filter_month == 0 || record_month == filter_month);
+
+                    if (year_matches && month_matches) {
+                        if (found_count == 0) {
+                            strcat(result_buffer, "Registros de préstamos encontrados para el ID '");
+                            strcat(result_buffer, id_to_find);
+                            strcat(result_buffer, "'");
+                            
+                            if (filter_year > 0) {
+                                char year_str[16];
+                                snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
+                                strcat(result_buffer, year_str);
+                            }
+                            
+                            if (filter_month > 0) {
+                                char month_str[16];
+                                snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
+                                strcat(result_buffer, month_str);
+                            }
+                            
+                            strcat(result_buffer, ":\n");
+                            strcat(result_buffer, csv_headers);
+                        }
+                        strcat(result_buffer, line_buffer);
+                        found_count++;
+                    }
+                }
+            } else { // Inventory - no aplicar filtros de fecha
+                if (found_count == 0) {
+                    strcat(result_buffer, "Registros de inventario encontrados para el ID '");
+                    strcat(result_buffer, id_to_find);
+                    strcat(result_buffer, "'");
+                    
+                    if (filter_year > 0) {
+                        char year_str[16];
+                        snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
+                        strcat(result_buffer, year_str);
+                    }
+                    
+                    if (filter_month > 0) {
+                        char month_str[16];
+                        snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
+                        strcat(result_buffer, month_str);
+                    }
+                    
+                    strcat(result_buffer, ":\n");
+                    strcat(result_buffer, csv_headers);
+                }
+                strcat(result_buffer, line_buffer);
+                found_count++;
             }
         }
 
@@ -113,19 +187,24 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     }
 
     if (found_count == 0) {
-        snprintf(result_buffer, sizeof(result_buffer), 
-                "ID '%s' no encontrado", id_to_find);
-        if (filter_year > 0) {
-            char year_str[16];
-            snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
-            strcat(result_buffer, year_str);
+        if (file_type == 1) {
+            snprintf(result_buffer, sizeof(result_buffer), 
+                    "ID '%s' no encontrado", id_to_find);
+            if (filter_year > 0) {
+                char year_str[16];
+                snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
+                strcat(result_buffer, year_str);
+            }
+            if (filter_month > 0) {
+                char month_str[16];
+                snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
+                strcat(result_buffer, month_str);
+            }
+            strcat(result_buffer, " o no hay registros que coincidan con los filtros de fecha.");
+        } else {
+            snprintf(result_buffer, sizeof(result_buffer), 
+                    "ID '%s' no encontrado en el inventario.", id_to_find);
         }
-        if (filter_month > 0) {
-            char month_str[16];
-            snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
-            strcat(result_buffer, month_str);
-        }
-        strcat(result_buffer, " o no hay registros que coincidan con los filtros de fecha.");
     }
 
     // Send response back to frontend
