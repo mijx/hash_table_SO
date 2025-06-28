@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <glib.h> // Necesario para g_thread y g_idle_add
 
 #define INPUT_PIPE "/tmp/frontend_input"
 #define OUTPUT_PIPE "/tmp/frontend_output"
@@ -14,57 +15,116 @@ GtkWidget *entry_id;
 GtkWidget *entry_year;
 GtkWidget *entry_month;
 GtkWidget *label_result;
+GtkWidget *button_search; // Referencia al botón para deshabilitarlo/habilitarlo
 
-void send_request_to_backend(const char *id, const char *year, const char *month) {
-    int fd;
-    char request[MAX_LINE_LEN];
-    
-    // Create the request string
-    snprintf(request, sizeof(request), "%s|%s|%s", id, year, month);
-    
-    // Open the input pipe (frontend writes to this)
-    mkfifo(INPUT_PIPE, 0666);
-    fd = open(INPUT_PIPE, O_WRONLY);
-    write(fd, request, strlen(request)+1);
-    close(fd);
+// Estructura para pasar datos al hilo de búsqueda
+typedef struct {
+    char id[256];
+    char year[16];
+    char month[16];
+} SearchRequest;
+
+// Estructura para pasar resultados del hilo al hilo principal
+typedef struct {
+    char response_message[MAX_LINE_LEN];
+} SearchResult;
+
+// Callback para actualizar la GUI desde el hilo principal
+gboolean update_gui_with_result(gpointer data) {
+    SearchResult *result = (SearchResult *)data;
+    gtk_label_set_text(GTK_LABEL(label_result), result->response_message);
+    gtk_widget_set_sensitive(button_search, TRUE); // Habilita el botón de nuevo
+    g_free(result); // Libera la memoria de la estructura de resultados
+    return G_SOURCE_REMOVE; // Elimina este evento de la cola
 }
 
-void read_response_from_backend() {
-    int fd;
-    char response[MAX_LINE_LEN];
+// Función que se ejecutará en un hilo separado
+gpointer backend_communication_thread(gpointer data) {
+    SearchRequest *request_data = (SearchRequest *)data;
     
-    // Open the output pipe (frontend reads from this)
-    fd = open(OUTPUT_PIPE, O_RDONLY);
-    read(fd, response, sizeof(response));
-    close(fd);
+    char request_string[MAX_LINE_LEN];
+    SearchResult *result_data = g_malloc(sizeof(SearchResult)); // Se liberará en update_gui_with_result
+
+    // 1. Enviar la solicitud al backend
+    snprintf(request_string, sizeof(request_string), "%s|%s|%s", 
+             request_data->id, request_data->year, request_data->month);
     
-    // Update the GUI with the response
-    gtk_label_set_text(GTK_LABEL(label_result), response);
+    int fd_input = open(INPUT_PIPE, O_WRONLY);
+    if (fd_input != -1) {
+        write(fd_input, request_string, strlen(request_string) + 1);
+        close(fd_input);
+    } else {
+        snprintf(result_data->response_message, sizeof(result_data->response_message), 
+                 "Error: No se pudo abrir la tubería de entrada al backend.");
+        g_idle_add(update_gui_with_result, result_data);
+        g_free(request_data);
+        return NULL;
+    }
+
+    // 2. Leer la respuesta del backend
+    int fd_output = open(OUTPUT_PIPE, O_RDONLY);
+    if (fd_output != -1) {
+        read(fd_output, result_data->response_message, sizeof(result_data->response_message));
+        close(fd_output);
+    } else {
+        snprintf(result_data->response_message, sizeof(result_data->response_message), 
+                 "Error: No se pudo abrir la tubería de salida del backend.");
+        g_idle_add(update_gui_with_result, result_data);
+        g_free(request_data);
+        return NULL;
+    }
+
+    // 3. Enviar la respuesta al hilo principal para actualizar la GUI
+    g_idle_add(update_gui_with_result, result_data);
+
+    g_free(request_data); // Liberar la memoria de la estructura de solicitud
+    return NULL;
 }
 
 void search_id(GtkWidget *widget, gpointer data) {
-    const char *id_to_find = gtk_entry_get_text(GTK_ENTRY(entry_id));
-    const char *year_str = gtk_entry_get_text(GTK_ENTRY(entry_year));
-    const char *month_str = gtk_entry_get_text(GTK_ENTRY(entry_month));
+    const char *id_to_find_raw = gtk_entry_get_text(GTK_ENTRY(entry_id));
+    const char *year_str_raw = gtk_entry_get_text(GTK_ENTRY(entry_year));
+    const char *month_str_raw = gtk_entry_get_text(GTK_ENTRY(entry_month));
     
+    // Validar entrada del año
+    if (strlen(year_str_raw) > 0) {
+        int year = atoi(year_str_raw);
+        if (year < 2005 || year > 2017) {
+            gtk_label_set_text(GTK_LABEL(label_result), "Error: El año debe estar entre 2005 y 2017.");
+            return;
+        }
+    }
+
     // Validate month input
-    if (strlen(month_str) > 0) {
-        int month = atoi(month_str);
+    if (strlen(month_str_raw) > 0) {
+        int month = atoi(month_str_raw);
         if (month < 1 || month > 12) {
             gtk_label_set_text(GTK_LABEL(label_result), "Error: El mes debe ser un número entre 1 y 12.");
             return;
         }
     }
+
+    // Deshabilitar el botón para evitar múltiples clics mientras se procesa
+    gtk_widget_set_sensitive(button_search, FALSE);
+    gtk_label_set_text(GTK_LABEL(label_result), "Buscando..."); // Mensaje de "cargando"
+
+    // Crear y llenar la estructura de solicitud
+    SearchRequest *request_data = g_malloc(sizeof(SearchRequest));
+    strncpy(request_data->id, id_to_find_raw, sizeof(request_data->id) - 1);
+    request_data->id[sizeof(request_data->id) - 1] = '\0';
+    strncpy(request_data->year, year_str_raw, sizeof(request_data->year) - 1);
+    request_data->year[sizeof(request_data->year) - 1] = '\0';
+    strncpy(request_data->month, month_str_raw, sizeof(request_data->month) - 1);
+    request_data->month[sizeof(request_data->month) - 1] = '\0';
     
-    send_request_to_backend(id_to_find, year_str, month_str);
-    read_response_from_backend();
+    // Iniciar el hilo para la comunicación con el backend
+    g_thread_new("BackendCommThread", backend_communication_thread, request_data);
 }
 
 static void activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *window;
     GtkWidget *grid;
     GtkWidget *label_prompt_id, *label_prompt_year, *label_prompt_month;
-    GtkWidget *button_search;
 
     window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(window), "Buscador de IDs CSV con Filtro de Fecha");
@@ -123,7 +183,13 @@ int main(int argc, char **argv) {
     GtkApplication *app;
     int status;
 
-    // Create pipes (just in case they don't exist)
+    // Inicializar el sistema de hilos de GLib
+    // Esto es importante para que g_thread_new funcione correctamente
+    if (!g_thread_supported()) {
+        g_thread_init(NULL); // Obsoleto en GLib 2.32+, pero buena práctica
+    }
+    
+    // Crear pipes (just in case they don't exist)
     mkfifo(INPUT_PIPE, 0666);
     mkfifo(OUTPUT_PIPE, 0666);
 

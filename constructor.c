@@ -5,9 +5,46 @@
 
 #define MAX_LINE_LEN 2048 // Asumimos un largo máximo de línea en el CSV
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+char* obtener_fecha_de_linea(const char *linea) {
+    static char fecha[8]; // "MM/YYYY" = 7 chars + '\0'
+    char *linea_copia = strdup(linea); // Reserva memoria con malloc y copia el contenido, porque strtok modifica
+    if (!linea_copia) return NULL;
+
+    char *token;
+    int columna = 0;
+
+    token = strtok(linea_copia, ",");
+    while (token != NULL) {
+        columna++;
+
+        if (columna == 6) { // CheckoutDateTime
+            int mes, dia, anio;
+            if (sscanf(token, "%d/%d/%d", &mes, &dia, &anio) == 3 &&
+                mes >= 1 && mes <= 12 && anio >= 2005 && anio <= 2017) {// Rango de años
+                snprintf(fecha, sizeof(fecha), "%02d/%04d", mes, anio); // Guarda en una variable en vez de imprimir en pantalla
+                free(linea_copia); // liberar copia por strdup
+                return fecha;
+            } else {
+                free(linea_copia);  // liberar copia por strdup
+                return NULL;
+            }
+        }
+
+        token = strtok(NULL, ",");
+    }
+
+    free(linea_copia);  // liberar copia por strdup
+    return NULL; // Si no se encontró la columna esperada
+}
+
+
 int main(void) {
 
-    const char *csv_filepath = "Data2005.csv"; // Archivo CSV de entrada
+    const char *csv_filepath = "minidataset.csv"; // Archivo CSV de entrada
     const char *header_filepath = "header.dat"; // Archivo de cabecera de salida
     const char *index_filepath = "index.dat"; // Archivo de índice de salida
 
@@ -46,6 +83,7 @@ int main(void) {
         char line_copy[MAX_LINE_LEN];
         strcpy(line_copy, line_buffer);
         
+        
         // Extraer el ID (primera columna)
         char *record_id = strtok(line_copy, ",");
         if (record_id == NULL) {
@@ -53,8 +91,14 @@ int main(void) {
             continue; // Línea vacía o mal formada
         }
 
+        // Extraer el mes y año
+        char *fecha = obtener_fecha_de_linea(line_buffer); // Necesitarás implementar esto
+        if (fecha == NULL) {
+            current_data_offset = ftell(csv_file);
+            continue; // Fecha inválida o no encontrada
+        }
         // 3. Calcular el índice hash
-        unsigned int hash_index = hash_function(record_id) % HASH_TABLE_SIZE;
+        unsigned int hash_index = hash_function(record_id, fecha) % HASH_TABLE_SIZE;
 
         // 4. Crear el nuevo nodo de índice
         IndexNode new_node;

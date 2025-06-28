@@ -13,14 +13,27 @@ typedef struct {
 
 // Función Hash (djb2, una de las más simples y efectivas para strings)
 // Toma una cadena (el ID) y devuelve un entero sin signo.
-unsigned long hash_function(const char *str) {
+// unsigned long hash_function(const char *str) {
+//     unsigned long hash = 5381;
+//     int c;
+
+//     while ((c = *str++)) {
+//         hash = ((hash << 5) + hash) + c; // hash * 33 + c
+//     }
+
+//     return hash;
+// }
+unsigned long hash_function(const char *bibNumber, const char *fecha) {
     unsigned long hash = 5381;
+    char combined[20]; // Ejemplo: "2023-12-25|123456"
+    
+    snprintf(combined, sizeof(combined), "%s|%s", fecha, bibNumber);
+    
+    const char *str = combined;
     int c;
-
     while ((c = *str++)) {
-        hash = ((hash << 5) + hash) + c; // hash * 33 + c
+        hash = ((hash << 5) + hash) + c;
     }
-
     return hash;
 }
 
