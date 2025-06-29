@@ -9,110 +9,294 @@
 #define INPUT_PIPE "/tmp/frontend_input"
 #define OUTPUT_PIPE "/tmp/frontend_output"
 #define MAX_LINE_LEN 4096
+#define BATCH_READ_SIZE 100  // Leer múltiples nodos en una sola operación
+
+const char *csv_filepath = "dataset.csv";
+const char *header_filepath = "header.dat";
+const char *index_filepath = "index.dat";
+
+
+
+
+
+
+// Cache para nodos frecuentemente accedidos
+typedef struct {
+    long offset;
+    IndexNode node;
+    int valid;
+    long last_used;
+} NodeCache;
+
+#define CACHE_SIZE 5000  // Cache más grande
+static NodeCache node_cache[CACHE_SIZE];
+static int cache_initialized = 0;
+static long cache_counter = 0;
+
+// Función hash mejorada para BibNumber + Fecha
+unsigned long improved_hash_function(const char *bibNumber, const char *fecha) {
+    unsigned long hash = 5381;
+    unsigned long hash2 = 1;
+    
+    // Procesar BibNumber con hash principal
+    const char *str = bibNumber;
+    int c;
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c;
+    }
+    
+    // Procesar fecha con segundo hash y combinar de manera más efectiva
+    str = fecha;
+    while ((c = *str++)) {
+        hash2 = hash2 * 31 + c;
+    }
+    
+    // Combinar los dos hashes de manera más distribuida
+    return hash ^ (hash2 << 16) ^ (hash2 >> 16);
+}
+
+// Inicializar cache
+void init_cache() {
+    if (!cache_initialized) {
+        for (int i = 0; i < CACHE_SIZE; i++) {
+            node_cache[i].valid = 0;
+            node_cache[i].last_used = 0;
+        }
+        cache_initialized = 1;
+    }
+}
+
+// Buscar nodo en cache
+IndexNode* get_cached_node(long offset) {
+    int cache_index = offset % CACHE_SIZE;
+    if (node_cache[cache_index].valid && node_cache[cache_index].offset == offset) {
+        node_cache[cache_index].last_used = ++cache_counter;
+        return &node_cache[cache_index].node;
+    }
+    return NULL;
+}
+
+// Agregar nodo al cache con reemplazo LRU
+void cache_node(long offset, IndexNode* node) {
+    int cache_index = offset % CACHE_SIZE;
+    
+    // Si la posición está ocupada, verificar si es más antigua
+    if (node_cache[cache_index].valid) {
+        // Buscar una posición menos usada en las cercanías
+        int best_index = cache_index;
+        long oldest_time = node_cache[cache_index].last_used;
+        
+        for (int i = 1; i < 10 && (cache_index + i) < CACHE_SIZE; i++) {
+            int idx = cache_index + i;
+            if (!node_cache[idx].valid || node_cache[idx].last_used < oldest_time) {
+                best_index = idx;
+                oldest_time = node_cache[idx].last_used;
+                if (!node_cache[idx].valid) break;
+            }
+        }
+        cache_index = best_index;
+    }
+    
+    node_cache[cache_index].offset = offset;
+    node_cache[cache_index].node = *node;
+    node_cache[cache_index].valid = 1;
+    node_cache[cache_index].last_used = ++cache_counter;
+}
+
+// Función para extraer fecha de una línea de manera más eficiente
+int extract_date_fast(const char *line, int *month, int *day, int *year) {
+    // Buscar la sexta coma directamente
+    int comma_count = 0;
+    const char *ptr = line;
+    
+    while (*ptr && comma_count < 5) {
+        if (*ptr == ',') comma_count++;
+        ptr++;
+    }
+    
+    if (comma_count == 5 && *ptr) {
+        return sscanf(ptr, "%d/%d/%d", month, day, year) == 3;
+    }
+    return 0;
+}
+
+// Función optimizada para lectura por lotes de nodos
+typedef struct {
+    long offset;
+    IndexNode node;
+} BatchNode;
+
+int read_chain_batch(FILE *index_file, long start_offset, BatchNode *batch, int max_nodes) {
+    int count = 0;
+    long current_offset = start_offset;
+    
+    while (current_offset != -1 && count < max_nodes) {
+        IndexNode* cached = get_cached_node(current_offset);
+        if (cached) {
+            batch[count].offset = current_offset;
+            batch[count].node = *cached;
+            current_offset = cached->next_node_offset;
+        } else {
+            fseek(index_file, current_offset, SEEK_SET);
+            if (fread(&batch[count].node, sizeof(IndexNode), 1, index_file) != 1) {
+                break;
+            }
+            batch[count].offset = current_offset;
+            cache_node(current_offset, &batch[count].node);
+            current_offset = batch[count].node.next_node_offset;
+        }
+        count++;
+    }
+    
+    return count;
+}
 
 void perform_search(const char *id_to_find, int filter_year, int filter_month) {
-    const char *csv_filepath = "Data2005.csv";
-    const char *header_filepath = "header.dat";
-    const char *index_filepath = "index.dat";
+    
+
+    init_cache();
 
     FILE *header_file = fopen(header_filepath, "rb");
     if (!header_file) {
         return;
     }
     
-    long header_table[HASH_TABLE_SIZE];
-    fread(header_table, sizeof(long), HASH_TABLE_SIZE, header_file);
-    fclose(header_file);
-
-    unsigned int hash_index = hash_function(id_to_find) % HASH_TABLE_SIZE;
-    long current_node_offset = header_table[hash_index];
-
-    if (current_node_offset == -1) {
+    // long header_table[HASH_TABLE_SIZE];
+    long *header_table = malloc(sizeof(long) * HASH_TABLE_SIZE);
+    if (!header_table) {
+        fprintf(stderr, "Error: No se pudo asignar memoria para la tabla hash\n");
         return;
     }
-
-    FILE *index_file = fopen(index_filepath, "rb");
-    FILE *csv_file = fopen(csv_filepath, "r");
-    if (!index_file || !csv_file) {
-        if (index_file) fclose(index_file);
-        if (csv_file) fclose(csv_file);
+    size_t read_result = fread(header_table, sizeof(long), HASH_TABLE_SIZE, header_file);
+    fclose(header_file);
+    
+    if (read_result != HASH_TABLE_SIZE) {
         return;
     }
 
     int found_count = 0;
     char line_buffer[MAX_LINE_LEN];
-    char result_buffer[MAX_LINE_LEN * 10]; // Buffer for results
+    char result_buffer[MAX_LINE_LEN * 20]; // Buffer más grande
     result_buffer[0] = '\0';
 
     const char *csv_headers = "BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime\n";
 
+    // Crear hash con BibNumber + fecha
+    char fecha[8];
+    snprintf(fecha, sizeof(fecha), "%02d/%04d", filter_month, filter_year);
+
+    unsigned int hash_index = improved_hash_function(id_to_find, fecha) % HASH_TABLE_SIZE;
+    long current_node_offset = header_table[hash_index];
+
+    FILE *index_file = NULL;
+    FILE *csv_file = NULL;
+
+    if (current_node_offset == -1) {
+        goto end_search;
+    }
+
+    index_file = fopen(index_filepath, "rb");
+    csv_file = fopen(csv_filepath, "r");
+    
+    if (!index_file || !csv_file) {
+        snprintf(result_buffer, sizeof(result_buffer), 
+                "Error: No se pudieron abrir los archivos de base de datos");
+        goto end_search;
+    }
+
+    // Procesar en lotes para reducir I/O
+    BatchNode batch[BATCH_READ_SIZE];
+    
     while (current_node_offset != -1) {
-        fseek(index_file, current_node_offset, SEEK_SET);
-
-        IndexNode current_node;
-        fread(&current_node, sizeof(IndexNode), 1, index_file);
-
-        fseek(csv_file, current_node.data_offset, SEEK_SET);
-        fgets(line_buffer, MAX_LINE_LEN, csv_file);
-
-        char line_copy[MAX_LINE_LEN];
-        strncpy(line_copy, line_buffer, sizeof(line_copy) - 1);
-        line_copy[sizeof(line_copy) - 1] = '\0';
-        char *record_id = strtok(line_copy, ",");
-
-        if (record_id != NULL && strcmp(record_id, id_to_find) == 0) {
-            char temp_line[MAX_LINE_LEN];
-            strncpy(temp_line, line_buffer, sizeof(temp_line) - 1);
-            temp_line[sizeof(temp_line) - 1] = '\0';
-
-            char *date_time_str = NULL;
-            int col_idx = 0;
-            char *token = strtok(temp_line, ",");
-            while (token != NULL && col_idx < 5) {
-                token = strtok(NULL, ",");
-                col_idx++;
+        int batch_size = read_chain_batch(index_file, current_node_offset, batch, BATCH_READ_SIZE);
+        
+        for (int i = 0; i < batch_size; i++) {
+            IndexNode current_node = batch[i].node;
+            
+            // Leer línea del CSV
+            if (fseek(csv_file, current_node.data_offset, SEEK_SET) != 0) {
+                continue;
             }
             
-            if (token != NULL) {
-                date_time_str = token;
+            if (!fgets(line_buffer, MAX_LINE_LEN, csv_file)) {
+                continue;
             }
 
-            int record_month, record_day, record_year;
-            if (date_time_str && sscanf(date_time_str, "%d/%d/%d", &record_month, &record_day, &record_year) == 3) {
-                int year_matches = (filter_year == 0 || record_year == filter_year);
-                int month_matches = (filter_month == 0 || record_month == filter_month);
+            // Extraer ID de manera eficiente
+            char *comma_pos = strchr(line_buffer, ',');
+            if (!comma_pos) {
+                continue;
+            }
 
-                if (year_matches && month_matches) {
-                    if (found_count == 0) {
-                        strcat(result_buffer, "Registros encontrados para el ID '");
-                        strcat(result_buffer, id_to_find);
-                        strcat(result_buffer, "'");
-                        
-                        if (filter_year > 0) {
-                            char year_str[16];
-                            snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
-                            strcat(result_buffer, year_str);
+            // Comparar ID directamente
+            int id_len = comma_pos - line_buffer;
+            int search_len = strlen(id_to_find);
+            
+            if (id_len == search_len && strncmp(line_buffer, id_to_find, id_len) == 0) {
+                // ID coincide, verificar fecha
+                int record_month, record_day, record_year;
+                
+                if (extract_date_fast(line_buffer, &record_month, &record_day, &record_year)) {
+                    // Verificar si coincide con los filtros
+                    int year_matches = (filter_year == 0 || record_year == filter_year);
+                    int month_matches = (filter_month == 0 || record_month == filter_month);
+                    
+                    if (year_matches && month_matches) {
+                        // Registro válido encontrado
+                        if (found_count == 0) {
+                            strcat(result_buffer, "Registros encontrados para el ID '");
+                            strcat(result_buffer, id_to_find);
+                            strcat(result_buffer, "'");
+                            
+                            if (filter_year > 0) {
+                                char year_str[16];
+                                snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
+                                strcat(result_buffer, year_str);
+                            }
+                            
+                            if (filter_month > 0) {
+                                char month_str[16];
+                                snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
+                                strcat(result_buffer, month_str);
+                            }
+                            
+                            strcat(result_buffer, ":\n");
+                            strcat(result_buffer, csv_headers);
                         }
                         
-                        if (filter_month > 0) {
-                            char month_str[16];
-                            snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
-                            strcat(result_buffer, month_str);
+                        // Verificar que no excedamos el buffer
+                        if (strlen(result_buffer) + strlen(line_buffer) < sizeof(result_buffer) - 100) {
+                            strcat(result_buffer, line_buffer);
+                            found_count++;
                         }
                         
-                        strcat(result_buffer, ":\n");
-                        strcat(result_buffer, csv_headers);
+                        // Limitar resultados para performance
+                        if (found_count >= 200) {
+                            strcat(result_buffer, "\n... (más de 200 resultados, mostrando solo los primeros 200)\n");
+                            goto end_search;
+                        }
                     }
-                    strcat(result_buffer, line_buffer);
-                    found_count++;
                 }
             }
         }
-
-        current_node_offset = current_node.next_node_offset;
+        
+        // Continuar con el siguiente lote si hay más nodos
+        if (batch_size == BATCH_READ_SIZE && batch[batch_size-1].node.next_node_offset != -1) {
+            current_node_offset = batch[batch_size-1].node.next_node_offset;
+        } else {
+            break;
+        }
     }
 
-    if (found_count == 0) {
+end_search:
+    if (index_file) {
+        fclose(index_file);
+    }
+    if (csv_file) {
+        fclose(csv_file);
+    }
+
+    if (found_count == 0 && result_buffer[0] == '\0') {
         snprintf(result_buffer, sizeof(result_buffer), 
                 "ID '%s' no encontrado", id_to_find);
         if (filter_year > 0) {
@@ -128,13 +312,16 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
         strcat(result_buffer, " o no hay registros que coincidan con los filtros de fecha.");
     }
 
-    // Send response back to frontend
+    // Enviar respuesta al frontend
     int fd = open(OUTPUT_PIPE, O_WRONLY);
-    write(fd, result_buffer, strlen(result_buffer)+1);
-    close(fd);
+    if (fd != -1) {
+        write(fd, result_buffer, strlen(result_buffer) + 1);
+        close(fd);
+    }
 
-    fclose(index_file);
-    fclose(csv_file);
+    // cerrar malloc de header:
+    free(header_table);
+
 }
 
 int main() {
@@ -144,33 +331,55 @@ int main() {
     char month_str[16];
     int filter_year, filter_month;
     
-    // Create pipes (just in case they don't exist)
     mkfifo(INPUT_PIPE, 0666);
     mkfifo(OUTPUT_PIPE, 0666);
 
+    printf("Backend de búsqueda iniciado...\n");
+
     while (1) {
-        // Read from input pipe
         int fd = open(INPUT_PIPE, O_RDONLY);
-        read(fd, request, sizeof(request));
+        if (fd == -1) {
+            usleep(100000); // Esperar 100ms antes de reintentar
+            continue;
+        }
+        
+        ssize_t bytes_read = read(fd, request, sizeof(request) - 1);
         close(fd);
+        
+        if (bytes_read <= 0) {
+            continue;
+        }
+        
+        request[bytes_read] = '\0';
         
         // Parse the request
         char *token = strtok(request, "|");
-        if (token) strncpy(id_to_find, token, sizeof(id_to_find)-1);
+        if (token) {
+            strncpy(id_to_find, token, sizeof(id_to_find) - 1);
+            id_to_find[sizeof(id_to_find) - 1] = '\0';
+        }
         
         token = strtok(NULL, "|");
-        if (token) strncpy(year_str, token, sizeof(year_str)-1);
-        else year_str[0] = '\0';
+        if (token) {
+            strncpy(year_str, token, sizeof(year_str) - 1);
+            year_str[sizeof(year_str) - 1] = '\0';
+        } else {
+            year_str[0] = '\0';
+        }
         
         token = strtok(NULL, "|");
-        if (token) strncpy(month_str, token, sizeof(month_str)-1);
-        else month_str[0] = '\0';
+        if (token) {
+            strncpy(month_str, token, sizeof(month_str) - 1);
+            month_str[sizeof(month_str) - 1] = '\0';
+        } else {
+            month_str[0] = '\0';
+        }
         
-        // Convert year and month to integers
         filter_year = (strlen(year_str) > 0) ? atoi(year_str) : 0;
         filter_month = (strlen(month_str) > 0) ? atoi(month_str) : 0;
         
-        // Perform the search
+        printf("Buscando ID: %s, Año: %d, Mes: %d\n", id_to_find, filter_year, filter_month);
+        
         perform_search(id_to_find, filter_year, filter_month);
     }
     

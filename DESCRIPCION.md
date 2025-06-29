@@ -1,0 +1,1 @@
+TRatando de cambiar funcion hash y tambien la funcion de busqueda, para reducir cuellos de botella: https://claude.ai/public/artifacts/5d0a56cf-eeab-463d-9778-83366b9ebc1f
