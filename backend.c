@@ -4,34 +4,33 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "indexer.h"
+#include "indexer.h" // Assuming indexer.h contains IndexNode and HASH_TABLE_SIZE definitions
 
 #define INPUT_PIPE "/tmp/frontend_input"
 #define OUTPUT_PIPE "/tmp/frontend_output"
 #define MAX_LINE_LEN 4096
-#define BATCH_READ_SIZE 100  // Leer múltiples nodos en una sola operación
+#define BATCH_READ_SIZE 100 // Leer múltiples nodos en una sola operación (aún aplicable para eficiencia en lectura directa)
 
 const char *csv_filepath = "dataset.csv";
 const char *header_filepath = "header.dat";
 const char *index_filepath = "index.dat";
 
+// --- Cache-related code REMOVED ---
+// typedef struct {
+//     long offset;
+//     IndexNode node;
+//     int valid;
+//     long last_used;
+// } NodeCache;
+// #define CACHE_SIZE 5000
+// static NodeCache node_cache[CACHE_SIZE];
+// static int cache_initialized = 0;
+// static long cache_counter = 0;
+// void init_cache() { /* ... */ }
+// IndexNode* get_cached_node(long offset) { /* ... */ }
+// void cache_node(long offset, IndexNode* node) { /* ... */ }
+// --- End of REMOVED Cache code ---
 
-
-
-
-
-// Cache para nodos frecuentemente accedidos
-typedef struct {
-    long offset;
-    IndexNode node;
-    int valid;
-    long last_used;
-} NodeCache;
-
-#define CACHE_SIZE 5000  // Cache más grande
-static NodeCache node_cache[CACHE_SIZE];
-static int cache_initialized = 0;
-static long cache_counter = 0;
 
 // Función hash mejorada para BibNumber + Fecha
 unsigned long improved_hash_function(const char *bibNumber, const char *fecha) {
@@ -55,54 +54,6 @@ unsigned long improved_hash_function(const char *bibNumber, const char *fecha) {
     return hash ^ (hash2 << 16) ^ (hash2 >> 16);
 }
 
-// Inicializar cache
-void init_cache() {
-    if (!cache_initialized) {
-        for (int i = 0; i < CACHE_SIZE; i++) {
-            node_cache[i].valid = 0;
-            node_cache[i].last_used = 0;
-        }
-        cache_initialized = 1;
-    }
-}
-
-// Buscar nodo en cache
-IndexNode* get_cached_node(long offset) {
-    int cache_index = offset % CACHE_SIZE;
-    if (node_cache[cache_index].valid && node_cache[cache_index].offset == offset) {
-        node_cache[cache_index].last_used = ++cache_counter;
-        return &node_cache[cache_index].node;
-    }
-    return NULL;
-}
-
-// Agregar nodo al cache con reemplazo LRU
-void cache_node(long offset, IndexNode* node) {
-    int cache_index = offset % CACHE_SIZE;
-    
-    // Si la posición está ocupada, verificar si es más antigua
-    if (node_cache[cache_index].valid) {
-        // Buscar una posición menos usada en las cercanías
-        int best_index = cache_index;
-        long oldest_time = node_cache[cache_index].last_used;
-        
-        for (int i = 1; i < 10 && (cache_index + i) < CACHE_SIZE; i++) {
-            int idx = cache_index + i;
-            if (!node_cache[idx].valid || node_cache[idx].last_used < oldest_time) {
-                best_index = idx;
-                oldest_time = node_cache[idx].last_used;
-                if (!node_cache[idx].valid) break;
-            }
-        }
-        cache_index = best_index;
-    }
-    
-    node_cache[cache_index].offset = offset;
-    node_cache[cache_index].node = *node;
-    node_cache[cache_index].valid = 1;
-    node_cache[cache_index].last_used = ++cache_counter;
-}
-
 // Función para extraer fecha de una línea de manera más eficiente
 int extract_date_fast(const char *line, int *month, int *day, int *year) {
     // Buscar la sexta coma directamente
@@ -120,7 +71,8 @@ int extract_date_fast(const char *line, int *month, int *day, int *year) {
     return 0;
 }
 
-// Función optimizada para lectura por lotes de nodos
+// Función optimizada para lectura por lotes de nodos (ahora sin cache)
+// La estructura BatchNode se mantiene, pero la función ya no usa la caché
 typedef struct {
     long offset;
     IndexNode node;
@@ -131,20 +83,15 @@ int read_chain_batch(FILE *index_file, long start_offset, BatchNode *batch, int 
     long current_offset = start_offset;
     
     while (current_offset != -1 && count < max_nodes) {
-        IndexNode* cached = get_cached_node(current_offset);
-        if (cached) {
-            batch[count].offset = current_offset;
-            batch[count].node = *cached;
-            current_offset = cached->next_node_offset;
-        } else {
-            fseek(index_file, current_offset, SEEK_SET);
-            if (fread(&batch[count].node, sizeof(IndexNode), 1, index_file) != 1) {
-                break;
-            }
-            batch[count].offset = current_offset;
-            cache_node(current_offset, &batch[count].node);
-            current_offset = batch[count].node.next_node_offset;
+        // --- Directly read from file, no cache check ---
+        fseek(index_file, current_offset, SEEK_SET);
+        if (fread(&batch[count].node, sizeof(IndexNode), 1, index_file) != 1) {
+            break; // Error reading or end of file
         }
+        batch[count].offset = current_offset;
+        current_offset = batch[count].node.next_node_offset; // Move to the next node in the chain
+        // --- End of direct read ---
+        
         count++;
     }
     
@@ -153,24 +100,27 @@ int read_chain_batch(FILE *index_file, long start_offset, BatchNode *batch, int 
 
 void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     
-
-    init_cache();
+    // --- init_cache() call REMOVED ---
+    // init_cache(); 
 
     FILE *header_file = fopen(header_filepath, "rb");
     if (!header_file) {
+        perror("Error al abrir el archivo de cabecera"); // Mejorar manejo de errores
         return;
     }
     
-    // long header_table[HASH_TABLE_SIZE];
     long *header_table = malloc(sizeof(long) * HASH_TABLE_SIZE);
     if (!header_table) {
         fprintf(stderr, "Error: No se pudo asignar memoria para la tabla hash\n");
+        fclose(header_file);
         return;
     }
     size_t read_result = fread(header_table, sizeof(long), HASH_TABLE_SIZE, header_file);
     fclose(header_file);
     
     if (read_result != HASH_TABLE_SIZE) {
+        fprintf(stderr, "Error: No se pudo leer la tabla hash completa\n"); // Mejorar manejo de errores
+        free(header_table);
         return;
     }
 
@@ -182,7 +132,7 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     const char *csv_headers = "BibNumber,ItemBarcode,ItemType,Collection,CallNumber,CheckoutDateTime\n";
 
     // Crear hash con BibNumber + fecha
-    char fecha[8];
+    char fecha[8]; // MM/YYYY + null terminator
     snprintf(fecha, sizeof(fecha), "%02d/%04d", filter_month, filter_year);
 
     unsigned int hash_index = improved_hash_function(id_to_find, fecha) % HASH_TABLE_SIZE;
@@ -192,7 +142,7 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     FILE *csv_file = NULL;
 
     if (current_node_offset == -1) {
-        goto end_search;
+        goto end_search; // No hay nodos para este hash
     }
 
     index_file = fopen(index_filepath, "rb");
@@ -208,17 +158,24 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
     BatchNode batch[BATCH_READ_SIZE];
     
     while (current_node_offset != -1) {
+        // Llama a la versión de read_chain_batch que lee directamente de disco
         int batch_size = read_chain_batch(index_file, current_node_offset, batch, BATCH_READ_SIZE);
         
+        if (batch_size == 0) { // No se leyeron nodos en el batch
+            break;
+        }
+
         for (int i = 0; i < batch_size; i++) {
             IndexNode current_node = batch[i].node;
             
             // Leer línea del CSV
             if (fseek(csv_file, current_node.data_offset, SEEK_SET) != 0) {
+                // Error seeking, perhaps the file changed or offset is bad
                 continue;
             }
             
             if (!fgets(line_buffer, MAX_LINE_LEN, csv_file)) {
+                // Error reading line or end of file
                 continue;
             }
 
@@ -249,15 +206,15 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
                             strcat(result_buffer, "'");
                             
                             if (filter_year > 0) {
-                                char year_str[16];
-                                snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
-                                strcat(result_buffer, year_str);
+                                char year_str_buf[16]; // Use a new buffer to avoid conflicts
+                                snprintf(year_str_buf, sizeof(year_str_buf), " (Año: %d)", filter_year);
+                                strcat(result_buffer, year_str_buf);
                             }
                             
                             if (filter_month > 0) {
-                                char month_str[16];
-                                snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
-                                strcat(result_buffer, month_str);
+                                char month_str_buf[16]; // Use a new buffer
+                                snprintf(month_str_buf, sizeof(month_str_buf), " (Mes: %d)", filter_month);
+                                strcat(result_buffer, month_str_buf);
                             }
                             
                             strcat(result_buffer, ":\n");
@@ -280,12 +237,8 @@ void perform_search(const char *id_to_find, int filter_year, int filter_month) {
             }
         }
         
-        // Continuar con el siguiente lote si hay más nodos
-        if (batch_size == BATCH_READ_SIZE && batch[batch_size-1].node.next_node_offset != -1) {
-            current_node_offset = batch[batch_size-1].node.next_node_offset;
-        } else {
-            break;
-        }
+        // Continuar con el siguiente lote si hay más nodos en la cadena
+        current_node_offset = batch[batch_size-1].node.next_node_offset;
     }
 
 end_search:
@@ -300,16 +253,19 @@ end_search:
         snprintf(result_buffer, sizeof(result_buffer), 
                 "ID '%s' no encontrado", id_to_find);
         if (filter_year > 0) {
-            char year_str[16];
-            snprintf(year_str, sizeof(year_str), " (Año: %d)", filter_year);
-            strcat(result_buffer, year_str);
+            char year_str_buf[16];
+            snprintf(year_str_buf, sizeof(year_str_buf), " (Año: %d)", filter_year);
+            strcat(result_buffer, year_str_buf);
         }
         if (filter_month > 0) {
-            char month_str[16];
-            snprintf(month_str, sizeof(month_str), " (Mes: %d)", filter_month);
-            strcat(result_buffer, month_str);
+            char month_str_buf[16];
+            snprintf(month_str_buf, sizeof(month_str_buf), " (Mes: %d)", filter_month);
+            strcat(result_buffer, month_str_buf);
         }
         strcat(result_buffer, " o no hay registros que coincidan con los filtros de fecha.");
+    } else if (found_count > 0 && found_count < 200 && strstr(result_buffer, "\n...") == NULL) {
+         // Add a newline if results were found but no truncation message was added
+         strcat(result_buffer, "\n");
     }
 
     // Enviar respuesta al frontend
@@ -357,6 +313,8 @@ int main() {
         if (token) {
             strncpy(id_to_find, token, sizeof(id_to_find) - 1);
             id_to_find[sizeof(id_to_find) - 1] = '\0';
+        } else { // Handle case where id_to_find is missing
+            id_to_find[0] = '\0';
         }
         
         token = strtok(NULL, "|");
