@@ -45,15 +45,12 @@ A continuación, se presenta una descripción detallada de los campos del datase
 Los criterios de búsqueda implementados son los siguientes:
 
 * ID del recurso: BibNumber.
-* Año de búsqueda(opcional).
-* Número de mes (opcional).
+* Año de búsqueda.
+* Número de mes.
 
 ### Justificación de los Criterios 
 
-Se permiten campos opcionales, año y mes, para permitir flexibilidad en el uso de la interfaz, ya que habilita al sistema para atender tanto a necesidades de consulta precisas como a exploraciones más amplias. Los dos tipos de consultas son:
-
-* **Consultas Específicas**: permite obtener los registros de un año y mes en particular, permitiendo al sistema reducir el espacio de búsqueda, mejorando significativamente el rendimiento y la velocidad de las consultas para ítems específicos dentro de ese periodo.
-* **Búsquedas Globales (a través del tiempo)**: los usuarios pueden optar por especificar solamente el ID para realizar búsquedas de un ítem a lo largo de toda la línea de tiempo del dataset. Útil para encontrar un ítem sin importar su año de registro.
+El sistema permite hacer **consultas específicas**: obtener los registros de un año y mes en particular, permitiendo al sistema reducir el espacio de búsqueda, mejorando significativamente el rendimiento y la velocidad de las consultas para ítems específicos dentro de ese periodo.
 
 Los criterios de búsqueda realacionados a la fecha de checkout es un campo primarios, debido a su importancia para filtrar y segmentar la información. Esta característica se vuelve fundamental dado que el dataset abarca más de una década de datos.
 
@@ -61,7 +58,7 @@ El ID de **BibNumber** se designa como otro campo de búsqueda primario. Su func
 
 ### Rangos de Valores Válidos para las Entradas 
 
-* **ID del recurso**: valor entero.
+* **ID del recurso**: número positivo.
 * **Año de búsqueda**: desde 2005 hasta 2017.
 * **Mes**: desde 01 hasta 12.
 
@@ -69,19 +66,17 @@ El ID de **BibNumber** se designa como otro campo de búsqueda primario. Su func
 
 ### 4.1. Pasos de Ejecución 
 
-Para compilar cada componente de tu programa, usa los siguientes comandos:
+Para compilar cada componente de tu programa, usa el siguiente comando del archivo MakeFile:
 
 ```bash
-gcc constructor.c -o constructor
-gcc frontend.c -o frontend `pkg-config --cflags --libs gtk+-3.0`
-gcc backend.c -o backend
+make
 ```
 
 Una vez compilado, el primer paso es generar el archivo índice de los hashes de todos los archivos CSV. Para hacer esto, ejecuta:
 ```bash
 ./constructor
 ```
-Después de generar el índice, necesitas crear las tuberías de comunicación:
+Después de generar el índice, puede ser necesario crear las tuberías de comunicación:
 ```bash
 mkfifo /tmp/frontend_input /tmp/frontend_output 2>/dev/null || true
 ```
@@ -94,9 +89,5 @@ Finalmente, en otra terminal, ejecuta el frontend:
 ```bash
 ./frontend
 ```
-### 4.2. Ejemplos específicos de búsquedas
-#### Ingresando ID, año y fecha
+### 4.2. Ejemplo de búsquedas
 <img src="demo/tres_parametros.png" alt="Ejemplo 1" style="width:80%;">
-
-#### Ingresando ID y año
-<img src="demo/dos_parametros.png" alt="Ejemplo 2" style="width:80%;">
