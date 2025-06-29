@@ -86,6 +86,11 @@ void search_id(GtkWidget *widget, gpointer data) {
     const char *year_str_raw = gtk_entry_get_text(GTK_ENTRY(entry_year));
     const char *month_str_raw = gtk_entry_get_text(GTK_ENTRY(entry_month));
     
+    // Validar que existe un ID
+    if(strlen(id_to_find_raw) == 0){
+        gtk_label_set_text(GTK_LABEL(label_result), "Error: No se ha ingresado un ID.");
+        return;
+    }
     // Validar entrada del año
     if (strlen(year_str_raw) > 0) {
         int year = atoi(year_str_raw);
@@ -93,6 +98,9 @@ void search_id(GtkWidget *widget, gpointer data) {
             gtk_label_set_text(GTK_LABEL(label_result), "Error: El año debe estar entre 2005 y 2017.");
             return;
         }
+    }else{
+        gtk_label_set_text(GTK_LABEL(label_result), "Error: No fue ingresado un año.");
+        return;
     }
 
     // Validate month input
@@ -102,6 +110,9 @@ void search_id(GtkWidget *widget, gpointer data) {
             gtk_label_set_text(GTK_LABEL(label_result), "Error: El mes debe ser un número entre 1 y 12.");
             return;
         }
+    }else{
+        gtk_label_set_text(GTK_LABEL(label_result), "Error: No fue ingresado un mes.");
+        return;
     }
 
     // Deshabilitar el botón para evitar múltiples clics mientras se procesa
@@ -136,7 +147,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
     gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
 
-    label_prompt_id = gtk_label_new("Ingrese el ID a buscar:");
+    label_prompt_id = gtk_label_new("Ingrese el ID a buscar (BibNum):");
     gtk_grid_attach(GTK_GRID(grid), label_prompt_id, 0, 0, 1, 1);
     gtk_widget_set_halign(label_prompt_id, GTK_ALIGN_END);
 
@@ -144,7 +155,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_grid_attach(GTK_GRID(grid), entry_id, 1, 0, 2, 1);
     gtk_widget_set_hexpand(entry_id, TRUE);
 
-    label_prompt_year = gtk_label_new("Año (opcional):");
+    label_prompt_year = gtk_label_new("Año:");
     gtk_grid_attach(GTK_GRID(grid), label_prompt_year, 0, 1, 1, 1);
     gtk_widget_set_halign(label_prompt_year, GTK_ALIGN_END);
 
@@ -154,7 +165,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_grid_attach(GTK_GRID(grid), entry_year, 1, 1, 2, 1);
     gtk_widget_set_hexpand(entry_year, TRUE);
 
-    label_prompt_month = gtk_label_new("Mes (1-12, opcional):");
+    label_prompt_month = gtk_label_new("Mes (01-12, dos dígitos):");
     gtk_grid_attach(GTK_GRID(grid), label_prompt_month, 0, 2, 1, 1);
     gtk_widget_set_halign(label_prompt_month, GTK_ALIGN_END);
 
